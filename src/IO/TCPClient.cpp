@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include <boost/regex.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include "TCPClient.h"
 
@@ -34,15 +35,15 @@ void AR::IO::TCPClient::connect(std::string host, unsigned short port, bool is_p
 {
 	unsigned long int host_ip_integer = 0;
 
-	boost::regex expression("([0-9]+)\\.([0-9]+)\\.([0-9]+)\\.([0-9]+)");
-	boost::cmatch what;
-	if(boost::regex_match(host.c_str(), what, expression))
+	std::vector<std::string> tokens;
+	boost::split(tokens, host, boost::is_any_of("."));
+	if (tokens.size()==4)
 	{
 		unsigned int
-			b1 = std::atoi(what[1].first),
-			b2 = std::atoi(what[2].first),
-			b3 = std::atoi(what[3].first),
-			b4 = std::atoi(what[4].first);
+			b1 = std::stoi(tokens[0]),
+			b2 = std::stoi(tokens[1]),
+			b3 = std::stoi(tokens[2]),
+			b4 = std::stoi(tokens[3]);
 
 		host_ip_integer =
 				(b1 & 0xFF) << (8 * 3) |
@@ -114,6 +115,11 @@ void AR::IO::TCPClient::tryReconnect()
 bool AR::IO::TCPClient::write(std::string message)
 {
 	try{
+		if (!socket)
+			return false;
+		if (!socket->is_open())
+			return false;
+
 		boost::asio::write(*socket, boost::asio::buffer(message));
 	}
 	catch(...)

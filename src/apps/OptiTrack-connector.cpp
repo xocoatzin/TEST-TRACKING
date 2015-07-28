@@ -1,19 +1,3 @@
-//=============================================================================
-// Copyright © 2014 NaturalPoint, Inc. All Rights Reserved.
-// 
-// This software is provided by the copyright holders and contributors "as is" and
-// any express or implied warranties, including, but not limited to, the implied
-// warranties of merchantability and fitness for a particular purpose are disclaimed.
-// In no event shall NaturalPoint, Inc. or contributors be liable for any direct,
-// indirect, incidental, special, exemplary, or consequential damages
-// (including, but not limited to, procurement of substitute goods or services;
-// loss of use, data, or profits; or business interruption) however caused
-// and on any theory of liability, whether in contract, strict liability,
-// or tort (including negligence or otherwise) arising in any way out of
-// the use of this software, even if advised of the possibility of such damage.
-//=============================================================================
-
-
 /*
 
 SampleClient.cpp
@@ -34,15 +18,21 @@ SampleClient [ServerIP] [LocalIP] [OutputFilename]
 #include <tchar.h>
 #include <conio.h>
 #include <winsock2.h>
+#include <string>
 
 #include "NatNetTypes.h"
 #include "NatNetClient.h"
+#include <boost/algorithm/string.hpp>
+#include <Eigen/Eigen>
+#include <Eigen/Geometry>
+
+
+#include "../IO/TCPClient.h"
+
+#define UNREAL_TRANSFORM
 
 #pragma warning( disable : 4996 )
 
-void _WriteHeader(FILE* fp, sDataDescriptions* pBodyDefs);
-void _WriteFrame(FILE* fp, sFrameOfMocapData* data);
-void _WriteFooter(FILE* fp);
 void __cdecl DataHandler(sFrameOfMocapData* data, void* pUserData);		// receives data from the server
 void __cdecl MessageHandler(int msgType, char* msg);		            // receives NatNet error mesages
 void resetClient();
@@ -52,7 +42,7 @@ unsigned int MyServersDataPort = 3130;
 unsigned int MyServersCommandPort = 3131;
 
 NatNetClient* theClient;
-FILE* fp;
+AR::IO::TCPClient::Ptr tcpClient;
 
 char szMyIPAddress[128] = "";
 char szServerIPAddress[128] = "";
@@ -61,29 +51,36 @@ int _tmain(int argc, _TCHAR* argv[])
 {
 	int iResult;
 	int iConnectionType = ConnectionType_Multicast;
-	//int iConnectionType = ConnectionType_Unicast;
 
 	// parse command line args
-	if (argc>1)
-	{
-		strcpy(szServerIPAddress, argv[1]);	// specified on command line
-		printf("Connecting to server at %s...\n", szServerIPAddress);
+	if (argc != 2)
+	{ 
+		printf("Error! Please run with the following arguments:\n");
+		printf("%s pose-server_ip:port\n", argv[0]);
+		return 1;
 	}
-	else
+
+	//Parsing args
+	std::string tcp_remote_ip;
+	int tcp_remote_port;
 	{
-		strcpy(szServerIPAddress, "");		// not specified - assume server is local machine
-		printf("Connecting to server at LocalMachine\n");
+		std::vector<std::string> tokens;
+		boost::split(tokens, argv[1], boost::is_any_of(":"));
+
+		if (tokens.size() != 2)
+		{
+			printf("Error! Please provide the remote address in the format: x.x.x.x:p\n"); 
+			return 1;
+		}
+
+		tcp_remote_ip = tokens[0];
+		tcp_remote_port = std::stoi(tokens[1], nullptr);
 	}
-	if (argc>2)
-	{
-		strcpy(szMyIPAddress, argv[2]);	    // specified on command line
-		printf("Connecting from %s...\n", szMyIPAddress);
-	}
-	else
-	{
-		strcpy(szMyIPAddress, "");          // not specified - assume server is local machine
-		printf("Connecting from LocalMachine...\n");
-	}
+
+
+	tcpClient = AR::IO::TCPClient::Create();
+	tcpClient->connect(tcp_remote_ip, tcp_remote_port, false);
+
 
 	// Create NatNet Client
 	iResult = CreateClient(iConnectionType);
@@ -108,13 +105,15 @@ int _tmain(int argc, _TCHAR* argv[])
 		printf("[SampleClient] Received: %s", (char*)response);
 	}
 
+
 	// Retrieve Data Descriptions from server
 	printf("\n\n[SampleClient] Requesting Data Descriptions...");
 	sDataDescriptions* pDataDefs = NULL;
 	int nBodies = theClient->GetDataDescriptions(&pDataDefs);
 	if (!pDataDefs)
 	{
-		printf("[SampleClient] Unable to retrieve Data Descriptions.");
+		printf("[SampleClient] Unable to retrieve Data Descriptions."); 
+		return 1;
 	}
 	else
 	{
@@ -122,16 +121,7 @@ int _tmain(int argc, _TCHAR* argv[])
 		for (int i = 0; i < pDataDefs->nDataDescriptions; i++)
 		{
 			printf("Data Description # %d (type=%d)\n", i, pDataDefs->arrDataDescriptions[i].type);
-			if (pDataDefs->arrDataDescriptions[i].type == Descriptor_MarkerSet)
-			{
-				// MarkerSet
-				sMarkerSetDescription* pMS = pDataDefs->arrDataDescriptions[i].Data.MarkerSetDescription;
-				printf("MarkerSet Name : %s\n", pMS->szName);
-				for (int i = 0; i < pMS->nMarkers; i++)
-					printf("%s\n", pMS->szMarkerNames[i]);
-
-			}
-			else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_RigidBody)
+			if (pDataDefs->arrDataDescriptions[i].type == Descriptor_RigidBody)
 			{
 				// RigidBody
 				sRigidBodyDescription* pRB = pDataDefs->arrDataDescriptions[i].Data.RigidBodyDescription;
@@ -140,22 +130,6 @@ int _tmain(int argc, _TCHAR* argv[])
 				printf("RigidBody Parent ID : %d\n", pRB->parentID);
 				printf("Parent Offset : %3.2f,%3.2f,%3.2f\n", pRB->offsetx, pRB->offsety, pRB->offsetz);
 			}
-			else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_Skeleton)
-			{
-				// Skeleton
-				sSkeletonDescription* pSK = pDataDefs->arrDataDescriptions[i].Data.SkeletonDescription;
-				printf("Skeleton Name : %s\n", pSK->szName);
-				printf("Skeleton ID : %d\n", pSK->skeletonID);
-				printf("RigidBody (Bone) Count : %d\n", pSK->nRigidBodies);
-				for (int j = 0; j < pSK->nRigidBodies; j++)
-				{
-					sRigidBodyDescription* pRB = &pSK->RigidBodies[j];
-					printf("  RigidBody Name : %s\n", pRB->szName);
-					printf("  RigidBody ID : %d\n", pRB->ID);
-					printf("  RigidBody Parent ID : %d\n", pRB->parentID);
-					printf("  Parent Offset : %3.2f,%3.2f,%3.2f\n", pRB->offsetx, pRB->offsety, pRB->offsetz);
-				}
-			}
 			else
 			{
 				printf("Unknown data type.");
@@ -163,24 +137,6 @@ int _tmain(int argc, _TCHAR* argv[])
 			}
 		}
 	}
-
-
-	// Create data file for writing received stream into
-	char szFile[MAX_PATH];
-	char szFolder[MAX_PATH];
-	GetCurrentDirectory(MAX_PATH, szFolder);
-	if (argc > 3)
-		sprintf(szFile, "%s\\%s", szFolder, argv[3]);
-	else
-		sprintf(szFile, "%s\\Client-output.pts", szFolder);
-	fp = fopen(szFile, "w");
-	if (!fp)
-	{
-		printf("error opening output file %s.  Exiting.", szFile);
-		exit(1);
-	}
-	if (pDataDefs)
-		_WriteHeader(fp, pDataDefs);
 
 	// Ready to receive marker stream!
 	printf("\nClient is connected to server and listening for data...\n");
@@ -207,24 +163,10 @@ int _tmain(int argc, _TCHAR* argv[])
 			}
 			break;
 		case 'f':
-		{
-			sFrameOfMocapData* pData = theClient->GetLastFrameOfData();
-			printf("Most Recent Frame: %d", pData->iFrame);
-		}
-		break;
-		case 'm':	                        // change to multicast
-			iResult = CreateClient(ConnectionType_Multicast);
-			if (iResult == ErrorCode_OK)
-				printf("Client connection type changed to Multicast.\n\n");
-			else
-				printf("Error changing client connection type to Multicast.\n\n");
-			break;
-		case 'u':	                        // change to unicast
-			iResult = CreateClient(ConnectionType_Unicast);
-			if (iResult == ErrorCode_OK)
-				printf("Client connection type changed to Unicast.\n\n");
-			else
-				printf("Error changing client connection type to Unicast.\n\n");
+			{
+				sFrameOfMocapData* pData = theClient->GetLastFrameOfData();
+				printf("Most Recent Frame: %d", pData->iFrame);
+			}
 			break;
 
 
@@ -237,8 +179,7 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	// Done - clean up.
 	theClient->Uninitialize();
-	_WriteFooter(fp);
-	fclose(fp);
+	tcpClient->disconnect();
 
 	return ErrorCode_OK;
 }
@@ -255,9 +196,6 @@ int CreateClient(int iConnectionType)
 
 	// create NatNet client
 	theClient = new NatNetClient(iConnectionType);
-
-	// [optional] use old multicast group
-	//theClient->SetMulticastAddress("224.0.0.1");
 
 	// print version info
 	unsigned char ver[4];
@@ -309,9 +247,6 @@ void __cdecl DataHandler(sFrameOfMocapData* data, void* pUserData)
 {
 	NatNetClient* pClient = (NatNetClient*)pUserData;
 
-	if (fp)
-		_WriteFrame(fp, data);
-
 	int i = 0;
 
 	printf("FrameID : %d\n", data->iFrame);
@@ -335,27 +270,84 @@ void __cdecl DataHandler(sFrameOfMocapData* data, void* pUserData)
 	pClient->TimecodeStringify(data->Timecode, data->TimecodeSubframe, szTimecode, 128);
 	printf("Timecode : %s\n", szTimecode);
 
-	// Other Markers
-	//printf("Other Markers [Count=%d]\n", data->nOtherMarkers);
-	//for (i = 0; i < data->nOtherMarkers; i++)
-	//{
-	//	printf("Other Marker %d : %3.2f\t%3.2f\t%3.2f\n",
-	//		i,
-	//		data->OtherMarkers[i][0],
-	//		data->OtherMarkers[i][1],
-	//		data->OtherMarkers[i][2]);
-	//}
-
 	// Rigid Bodies
 	printf("Rigid Bodies [Count=%d]\n", data->nRigidBodies);
+	std::stringstream ss;
+	bool any = false;
 	for (i = 0; i < data->nRigidBodies; i++)
 	{
 		// params
 		// 0x01 : bool, rigid body was successfully tracked in this frame
 		bool bTrackingValid = data->RigidBodies[i].params & 0x01;
 
+		if (bTrackingValid)
+		{
+			auto &rb = data->RigidBodies[i];
+
+			float
+				x = rb.x,
+				y = rb.y,
+				z = rb.z,
+				qw = rb.qw,
+				qx = rb.qx,
+				qy = rb.qy,
+				qz = rb.qz;
+#ifdef UNREAL_TRANSFORM
+#define PI 3.141592
+			{
+				typedef Eigen::AngleAxisd Axis;
+				typedef Eigen::Vector3d Vec;
+				auto UX = Vec::UnitX();
+				auto UY = Vec::UnitY();
+				auto UZ = Vec::UnitZ();
+
+				auto q = Eigen::Quaterniond(qw, qx, qy, qz);
+
+				/* Here we 'add' an angular offset */{
+					Eigen::Quaterniond
+						a(Eigen::AngleAxisd(PI, UX)),
+						b(Eigen::AngleAxisd(PI, UY)),
+						c(Eigen::AngleAxisd(PI, UZ));
+
+					q = q * a;
+				}
+				/* Here we invert the rotation axes */{
+					auto euler = q.toRotationMatrix().eulerAngles(2, 0, 1);
+					auto flip =
+						Axis((euler[0]), UX) *
+						Axis(-(euler[1]), UY) *
+						Axis(-(euler[2]), UZ);
+
+					q = Eigen::Quaterniond(flip);
+				}
+
+				float
+					tx = x,
+					ty = y,
+					tz = z;
+				x = -tz;
+				y = tx;
+				z = ty;
+
+				qw = q.w();
+				qx = q.x();
+				qy = q.y();
+				qz = q.z();
+			}
+#endif
+
+
+			ss
+				<< x << " " << y << " " << z << " "
+				<< qw << " " << qx << " " << qy << " " << qz << " "
+				<< data->fTimestamp << " " << rb.ID << "\n";
+
+			any = true;
+		}
+
+		 
 		printf("Rigid Body [ID=%d  Error=%3.2f  Valid=%d]\n", data->RigidBodies[i].ID, data->RigidBodies[i].MeanError, bTrackingValid);
-		printf("\tx\ty\tz\tqx\tqy\tqz\tqw\n");
+		//printf("\tx\ty\tz\tqx\tqy\tqz\tqw\n");
 		printf("\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\n",
 			data->RigidBodies[i].x,
 			data->RigidBodies[i].y,
@@ -364,67 +356,18 @@ void __cdecl DataHandler(sFrameOfMocapData* data, void* pUserData)
 			data->RigidBodies[i].qy,
 			data->RigidBodies[i].qz,
 			data->RigidBodies[i].qw);
-
-		//printf("\tRigid body markers [Count=%d]\n", data->RigidBodies[i].nMarkers);
-		//for (int iMarker = 0; iMarker < data->RigidBodies[i].nMarkers; iMarker++)
-		//{
-		//	printf("\t\t");
-		//	if (data->RigidBodies[i].MarkerIDs)
-		//		printf("MarkerID:%d", data->RigidBodies[i].MarkerIDs[iMarker]);
-		//	if (data->RigidBodies[i].MarkerSizes)
-		//		printf("\tMarkerSize:%3.2f", data->RigidBodies[i].MarkerSizes[iMarker]);
-		//	if (data->RigidBodies[i].Markers)
-		//		printf("\tMarkerPos:%3.2f,%3.2f,%3.2f\n",
-		//		data->RigidBodies[i].Markers[iMarker][0],
-		//		data->RigidBodies[i].Markers[iMarker][1],
-		//		data->RigidBodies[i].Markers[iMarker][2]);
-		//}
 	}
 
-	// skeletons
-	//printf("Skeletons [Count=%d]\n", data->nSkeletons);
-	//for (i = 0; i < data->nSkeletons; i++)
-	//{
-	//	sSkeletonData skData = data->Skeletons[i];
-	//	printf("Skeleton [ID=%d  Bone count=%d]\n", skData.skeletonID, skData.nRigidBodies);
-	//	for (int j = 0; j< skData.nRigidBodies; j++)
-	//	{
-	//		sRigidBodyData rbData = skData.RigidBodyData[j];
-	//		printf("Bone %d\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\n",
-	//			rbData.ID, rbData.x, rbData.y, rbData.z, rbData.qx, rbData.qy, rbData.qz, rbData.qw);
-
-	//		printf("\tRigid body markers [Count=%d]\n", rbData.nMarkers);
-	//		for (int iMarker = 0; iMarker < rbData.nMarkers; iMarker++)
-	//		{
-	//			printf("\t\t");
-	//			if (rbData.MarkerIDs)
-	//				printf("MarkerID:%d", rbData.MarkerIDs[iMarker]);
-	//			if (rbData.MarkerSizes)
-	//				printf("\tMarkerSize:%3.2f", rbData.MarkerSizes[iMarker]);
-	//			if (rbData.Markers)
-	//				printf("\tMarkerPos:%3.2f,%3.2f,%3.2f\n",
-	//				data->RigidBodies[i].Markers[iMarker][0],
-	//				data->RigidBodies[i].Markers[iMarker][1],
-	//				data->RigidBodies[i].Markers[iMarker][2]);
-	//		}
-	//	}
-	//}
-
-	// labeled markers
-	//bool bOccluded;     // marker was not visible (occluded) in this frame
-	//bool bPCSolved;     // reported position provided by point cloud solve
-	//bool bModelSolved;  // reported position provided by model solve
-	//printf("Labeled Markers [Count=%d]\n", data->nLabeledMarkers);
-	//for (i = 0; i < data->nLabeledMarkers; i++)
-	//{
-	//	bOccluded = data->LabeledMarkers[i].params & 0x01;
-	//	bPCSolved = data->LabeledMarkers[i].params & 0x02;
-	//	bModelSolved = data->LabeledMarkers[i].params & 0x04;
-	//	sMarker marker = data->LabeledMarkers[i];
-	//	printf("Labeled Marker [ID=%d, Occluded=%d, PCSolved=%d, ModelSolved=%d] [size=%3.2f] [pos=%3.2f,%3.2f,%3.2f]\n",
-	//		marker.ID, bOccluded, bPCSolved, bModelSolved, marker.size, marker.x, marker.y, marker.z);
-	//}
-
+	printf("Sending data...\n");
+	if (any && tcpClient)
+	{
+		if (tcpClient->write(ss.str()))
+			printf("Sending data... OK\n");
+		else
+			printf("Sending data... SOCKET CLOSED\n");
+	}
+	else
+		printf("Sending data... NOPE\n");
 }
 
 // MessageHandler receives NatNet error/debug messages
@@ -433,51 +376,6 @@ void __cdecl MessageHandler(int msgType, char* msg)
 	printf("\n%s\n", msg);
 }
 
-/* File writing routines */
-void _WriteHeader(FILE* fp, sDataDescriptions* pBodyDefs)
-{
-	int i = 0;
-
-	if (!pBodyDefs->arrDataDescriptions[0].type == Descriptor_MarkerSet)
-		return;
-
-	sMarkerSetDescription* pMS = pBodyDefs->arrDataDescriptions[0].Data.MarkerSetDescription;
-
-	fprintf(fp, "<MarkerSet>\n\n");
-	fprintf(fp, "<Name>\n%s\n</Name>\n\n", pMS->szName);
-
-	fprintf(fp, "<Markers>\n");
-	for (i = 0; i < pMS->nMarkers; i++)
-	{
-		fprintf(fp, "%s\n", pMS->szMarkerNames[i]);
-	}
-	fprintf(fp, "</Markers>\n\n");
-
-	fprintf(fp, "<Data>\n");
-	fprintf(fp, "Frame#\t");
-	for (i = 0; i < pMS->nMarkers; i++)
-	{
-		fprintf(fp, "M%dX\tM%dY\tM%dZ\t", i, i, i);
-	}
-	fprintf(fp, "\n");
-
-}
-
-void _WriteFrame(FILE* fp, sFrameOfMocapData* data)
-{
-	fprintf(fp, "%d", data->iFrame);
-	for (int i = 0; i < data->MocapData->nMarkers; i++)
-	{
-		fprintf(fp, "\t%.5f\t%.5f\t%.5f", data->MocapData->Markers[i][0], data->MocapData->Markers[i][1], data->MocapData->Markers[i][2]);
-	}
-	fprintf(fp, "\n");
-}
-
-void _WriteFooter(FILE* fp)
-{
-	fprintf(fp, "</Data>\n\n");
-	fprintf(fp, "</MarkerSet>\n");
-}
 
 void resetClient()
 {
